@@ -309,7 +309,7 @@ def main():
         if os.path.exists(outfile):
             with open(outfile, "r") as f:
                 file_content = f.read()
-            if len(file_content) > len(raw):
+            if file_content.strip():
                 raw = file_content
         else:
             with open(outfile, "w") as f:
