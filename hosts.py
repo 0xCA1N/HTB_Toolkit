@@ -21,7 +21,7 @@ if (location):
     print(f"[+] Found hostname: {hostname}")
 
     # Add to /etc/hosts
-    entry = f"{ip} {hostname}"
+    entry = f"\n{ip} {hostname}\n"
     subprocess.run(["sudo", "tee", "-a", "/etc/hosts"], input=entry.encode(), stdout=subprocess.DEVNULL)
     print(f"[+] Added '{entry}' to /etc/hosts")
 else:
