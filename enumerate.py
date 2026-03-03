@@ -457,11 +457,14 @@ def run_subfuzz_default(domain, ip):
             add_subs_to_hosts(hits, domain, ip)
 
         success(f"Full output saved to {C.BOLD}{outfile}{C.RESET}")
+        return hits
 
     except subprocess.TimeoutExpired:
         fail("Subdomain fuzzing timed out after 30 minutes")
+        return []
     except KeyboardInterrupt:
         warn("Subdomain fuzzing interrupted")
+        return []
 
 
 def run_subfuzz_manual(domain):
@@ -472,6 +475,33 @@ def run_subfuzz_manual(domain):
     else:
         warn("subfuzz.py not found — running with defaults")
         run_subfuzz_default(domain, None)
+
+
+# ── Phase 5: CMS Detection ─────────────────────────────
+
+def run_cms_default(urls):
+    """Run CMS detection directly against all URLs, no banner."""
+    script = find_script("cms.py")
+    if script:
+        step(f"Scanning {len(urls)} target(s) for CMS/technologies...")
+        try:
+            cmd = ["python3", script, "--no-banner"] + urls
+            subprocess.run(cmd, timeout=120)
+        except subprocess.TimeoutExpired:
+            fail("CMS detection timed out")
+        except KeyboardInterrupt:
+            warn("CMS detection interrupted")
+    else:
+        fail("cms.py not found — skipping CMS detection")
+
+
+def run_cms_manual(urls):
+    """Run cms.py interactively."""
+    script = find_script("cms.py")
+    if script:
+        subprocess.run(["python3", script] + urls)
+    else:
+        fail("cms.py not found — skipping CMS detection")
 
 
 # ── Summary ─────────────────────────────────────────────
@@ -491,7 +521,7 @@ def summary(ip, hostname, phases_run):
     for phase in phases_run:
         print(f"    {C.GREEN}✓{C.RESET} {phase}")
 
-    outfiles = [f for f in os.listdir(".") if f.startswith(("scan_", "dirbust_", "subfuzz_")) and f.endswith(".txt")]
+    outfiles = [f for f in os.listdir(".") if f.startswith(("scan_", "dirbust_", "subfuzz_", "cms_")) and f.endswith(".txt")]
     if outfiles:
         print(f"\n  {C.DIM}Output files:{C.RESET}")
         for f in sorted(outfiles):
@@ -559,6 +589,7 @@ def main():
         phases_run.append("Directory Busting")
 
     # ── Phase 4: Subdomain Fuzzing ──────────────────
+    discovered_subs = []
     if hostname:
         if manual:
             if not ask_continue("Run subdomain fuzzing?"):
@@ -569,10 +600,30 @@ def main():
                 phases_run.append("Subdomain Fuzzing")
         else:
             section("Phase 4: Subdomain Fuzzing")
-            run_subfuzz_default(hostname, ip)
+            hits = run_subfuzz_default(hostname, ip) or []
+            discovered_subs = [h["subdomain"] for h in hits]
             phases_run.append("Subdomain Fuzzing")
     else:
         warn("No hostname discovered — skipping subdomain fuzzing")
+
+    # ── Phase 5: CMS Detection ──────────────────────
+    cms_urls = [url]
+    if hostname and discovered_subs:
+        for sub in discovered_subs:
+            full = sub if "." in sub else f"{sub}.{hostname}"
+            cms_urls.append(f"http://{full}")
+
+    if manual:
+        if not ask_continue("Run CMS detection?"):
+            warn("Skipping CMS detection")
+        else:
+            section("Phase 5: CMS Detection")
+            run_cms_manual(cms_urls)
+            phases_run.append("CMS Detection")
+    else:
+        section("Phase 5: CMS Detection")
+        run_cms_default(cms_urls)
+        phases_run.append("CMS Detection")
 
     # ── Summary ─────────────────────────────────────
     summary(ip, hostname, phases_run)
