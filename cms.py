@@ -486,8 +486,10 @@ def main():
             urls.append(url)
 
     use_whatweb = "--no-whatweb" not in sys.argv
+    show_banner = "--no-banner" not in sys.argv
 
-    banner(urls)
+    if show_banner:
+        banner(urls)
 
     # Output file
     clean_name = re.sub(r"[^\w]", "_", urls[0].split("//")[-1].rstrip("/"))
