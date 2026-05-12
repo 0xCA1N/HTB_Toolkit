@@ -10,6 +10,7 @@ Usage:
 """
 
 import requests
+import urllib3
 from urllib.parse import urlparse
 import subprocess
 import sys
@@ -17,6 +18,8 @@ import re
 import shutil
 import os
 from datetime import datetime
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 # ── Colors ──────────────────────────────────────────────
@@ -116,6 +119,17 @@ def find_script(name):
     return None
 
 
+def detect_scheme(host):
+    """Probe host for HTTPS then HTTP. Returns 'https' or 'http'."""
+    for scheme in ("https", "http"):
+        try:
+            requests.get(f"{scheme}://{host}", allow_redirects=False, timeout=5, verify=False)
+            return scheme
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            continue
+    return "http"
+
+
 def resolve_outdir(box_name):
     """Return (and create) boxes/<box_name>/ relative to the repo root."""
     repo_root = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -141,25 +155,24 @@ def color_status(code):
 # ── Phase 1: Hostname Discovery ────────────────────────
 
 def discover_hostname(ip):
-    step(f"Probing http://{ip} for hostname redirect...")
+    step(f"Probing {ip} for hostname redirect (http then https)...")
 
-    try:
-        response = requests.get(f"http://{ip}", allow_redirects=False, timeout=10)
-    except requests.exceptions.ConnectionError:
-        fail(f"Could not connect to {ip}")
-        return None
-    except requests.exceptions.Timeout:
-        fail(f"Connection to {ip} timed out")
-        return None
+    hostname = None
+    for probe_scheme in ("http", "https"):
+        try:
+            response = requests.get(f"{probe_scheme}://{ip}", allow_redirects=False, timeout=10, verify=False)
+            location = response.headers.get("Location")
+            if not location:
+                continue
+            parsed = urlparse(location).hostname
+            if parsed:
+                hostname = parsed
+                break
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            continue
 
-    location = response.headers.get("Location")
-    if not location:
-        warn("No redirect found — target may not have a virtual host")
-        return None
-
-    hostname = urlparse(location).hostname
     if not hostname:
-        warn(f"Could not parse hostname from redirect: {location}")
+        warn("No redirect found — target may not have a virtual host")
         return None
 
     success(f"Found hostname: {C.BOLD}{hostname}{C.RESET}")
@@ -318,6 +331,8 @@ def run_dirbust_default(url, outdir):
     wl_short = os.path.basename(wordlist)
 
     cmd = ["feroxbuster", "-u", url, "-w", wordlist, "-t", "100", "-o", outfile, "--no-state"]
+    if url.startswith("https://"):
+        cmd.append("-k")
 
     step(f"Tool: {DEFAULT_DIRBUST_TOOL} | Wordlist: {wl_short}")
     step(f"Running: {' '.join(cmd)}")
@@ -419,7 +434,7 @@ def add_subs_to_hosts(hits, domain, ip):
         success(f"Added {added} new entries to /etc/hosts")
 
 
-def run_subfuzz_default(domain, ip, outdir):
+def run_subfuzz_default(domain, ip, outdir, scheme="http"):
     """Run ffuf directly with defaults, pretty output, no menus."""
     if not shutil.which(DEFAULT_SUBFUZZ_TOOL):
         fail(f"{DEFAULT_SUBFUZZ_TOOL} not found — skipping subdomain fuzzing")
@@ -436,7 +451,7 @@ def run_subfuzz_default(domain, ip, outdir):
 
     cmd = [
         "ffuf",
-        "-u", f"http://{domain}",
+        "-u", f"{scheme}://{domain}",
         "-w", wordlist,
         "-H", f"Host: FUZZ.{domain}",
         "-t", "100",
@@ -444,6 +459,8 @@ def run_subfuzz_default(domain, ip, outdir):
         "-mc", "all",
         "-ac",
     ]
+    if scheme == "https":
+        cmd.append("-k")
 
     step(f"Tool: {DEFAULT_SUBFUZZ_TOOL} | Wordlist: {wl_short}")
     step(f"Running: {' '.join(cmd)}")
@@ -477,14 +494,14 @@ def run_subfuzz_default(domain, ip, outdir):
         return []
 
 
-def run_subfuzz_manual(domain, outdir):
+def run_subfuzz_manual(domain, outdir, scheme="http"):
     """Run subfuzz.py interactively."""
     script = find_script("subfuzz.py")
     if script:
         subprocess.run(["python3", script, domain], cwd=outdir)
     else:
         warn("subfuzz.py not found — running with defaults")
-        run_subfuzz_default(domain, None, outdir)
+        run_subfuzz_default(domain, None, outdir, scheme=scheme)
 
 
 # ── Phase 5: CMS Detection ─────────────────────────────
@@ -586,11 +603,16 @@ def main():
     hostname = discover_hostname(ip)
     phases_run.append("Hostname Discovery")
 
-    if not hostname:
-        warn("No hostname found — will scan by IP only")
-        url = f"http://{ip}"
+    target_host = hostname or ip
+    step(f"Detecting scheme for {target_host}...")
+    scheme = detect_scheme(target_host)
+    url = f"{scheme}://{target_host}"
+    if scheme == "https":
+        success(f"HTTPS detected — using {url}")
     else:
-        url = f"http://{hostname}"
+        if not hostname:
+            warn("No hostname found — will scan by IP only")
+        step(f"Using {url}")
 
     # ── Phase 2: Nmap Scan ──────────────────────────
     if manual:
@@ -626,11 +648,11 @@ def main():
                 warn("Skipping subdomain fuzzing")
             else:
                 section("Phase 4: Subdomain Fuzzing")
-                run_subfuzz_manual(hostname, outdir)
+                run_subfuzz_manual(hostname, outdir, scheme=scheme)
                 phases_run.append("Subdomain Fuzzing")
         else:
             section("Phase 4: Subdomain Fuzzing")
-            hits = run_subfuzz_default(hostname, ip, outdir) or []
+            hits = run_subfuzz_default(hostname, ip, outdir, scheme=scheme) or []
             discovered_subs = [h["subdomain"] for h in hits]
             phases_run.append("Subdomain Fuzzing")
     else:
@@ -641,7 +663,7 @@ def main():
     if hostname and discovered_subs:
         for sub in discovered_subs:
             full = sub if "." in sub else f"{sub}.{hostname}"
-            cms_urls.append(f"http://{full}")
+            cms_urls.append(f"{scheme}://{full}")
 
     if manual:
         if not ask_continue("Run CMS detection?"):
