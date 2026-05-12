@@ -7,12 +7,15 @@ Usage: python3 cms_detect.py <url> [url2] [url3] ...
 """
 
 import requests
+import urllib3
 import subprocess
 import sys
 import re
 import shutil
 import os
 from datetime import datetime
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 # ── Colors ──────────────────────────────────────────────
@@ -363,6 +366,7 @@ def scan_target(url, use_whatweb=True):
     """Run all detection methods against a single URL."""
     all_findings = []
     session = requests.Session()
+    session.verify = False
     session.headers.update({"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:109.0)"})
 
     # 1. Fetch main page
