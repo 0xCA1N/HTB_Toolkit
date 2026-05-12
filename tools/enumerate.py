@@ -4,8 +4,9 @@ HTB Enumerator
 Master script that orchestrates the full enumeration pipeline.
 Modes: default (all defaults, just provide IP) or manual (interactive per-tool options)
 Usage:
-  python3 enumerate.py <IP>              # default mode
-  python3 enumerate.py <IP> --manual     # manual mode
+  python3 enumerate.py <IP> --box <name>          # default mode
+  python3 enumerate.py <IP> --box <name> --manual # manual mode
+  python3 enumerate.py <IP>                        # prompts for box name
 """
 
 import requests
@@ -58,13 +59,14 @@ STATUS_COLORS = {
 }
 
 
-def banner(ip):
+def banner(ip, box_name=None):
+    box_line = f"\n{C.DIM}  Box:{C.RESET}       {C.WHITE}{box_name}{C.RESET}" if box_name else ""
     print(f"""
 {C.RED}{C.BOLD}  ╦ ╦╔╦╗╔╗   {C.CYAN}╔═╗╔╗╔╦ ╦╔╦╗
 {C.RED}  ╠═╣ ║ ╠╩╗  {C.CYAN}║╣ ║║║║ ║║║║
 {C.RED}  ╩ ╩ ╩ ╚═╝  {C.CYAN}╚═╝╝╚╝╚═╝╩ ╩{C.RESET}
 {C.DIM}  ─────────────────────────────{C.RESET}
-{C.DIM}  Target:{C.RESET}    {C.WHITE}{ip}{C.RESET}
+{C.DIM}  Target:{C.RESET}    {C.WHITE}{ip}{C.RESET}{box_line}
 {C.DIM}  Time:{C.RESET}      {C.WHITE}{datetime.now().strftime('%H:%M:%S')}{C.RESET}
 """)
 
@@ -112,6 +114,14 @@ def find_script(name):
         if os.path.exists(path):
             return path
     return None
+
+
+def resolve_outdir(box_name):
+    """Return (and create) boxes/<box_name>/ relative to the repo root."""
+    repo_root = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+    outdir = os.path.join(repo_root, "boxes", box_name)
+    os.makedirs(outdir, exist_ok=True)
+    return outdir
 
 
 def first_available(paths):
@@ -224,9 +234,9 @@ def parse_nmap_display(raw):
     print()
 
 
-def run_nmap_default(ip):
+def run_nmap_default(ip, outdir):
     """Run nmap directly with pretty output."""
-    outfile = f"scan_{ip.replace('.', '_')}.txt"
+    outfile = os.path.join(outdir, f"scan_{ip.replace('.', '_')}.txt")
     cmd = f"{DEFAULT_NMAP_CMD} {ip}"
 
     step(f"Running: {cmd}")
@@ -246,14 +256,14 @@ def run_nmap_default(ip):
         warn("Nmap scan interrupted")
 
 
-def run_nmap_manual(ip):
+def run_nmap_manual(ip, outdir):
     """Run nmap via nmap.py interactively."""
     script = find_script("nmap.py")
     if script:
-        subprocess.run(["python3", script, ip])
+        subprocess.run(["python3", script, ip], cwd=outdir)
     else:
         warn("nmap.py not found — running directly")
-        run_nmap_default(ip)
+        run_nmap_default(ip, outdir)
 
 
 # ── Phase 3: Directory Busting ─────────────────────────
@@ -292,7 +302,7 @@ def display_dirbust_hits(hits):
     print(f"\n  {C.DIM}{len(unique)} unique results{C.RESET}\n")
 
 
-def run_dirbust_default(url):
+def run_dirbust_default(url, outdir):
     """Run feroxbuster directly with defaults, pretty output, no menus."""
     if not shutil.which(DEFAULT_DIRBUST_TOOL):
         fail(f"{DEFAULT_DIRBUST_TOOL} not found — skipping directory busting")
@@ -304,7 +314,7 @@ def run_dirbust_default(url):
         return
 
     clean_name = re.sub(r"[^\w]", "_", url.split("//")[-1].rstrip("/"))
-    outfile = f"dirbust_{clean_name}.txt"
+    outfile = os.path.join(outdir, f"dirbust_{clean_name}.txt")
     wl_short = os.path.basename(wordlist)
 
     cmd = ["feroxbuster", "-u", url, "-w", wordlist, "-t", "100", "-o", outfile, "--no-state"]
@@ -334,14 +344,14 @@ def run_dirbust_default(url):
         warn("Directory busting interrupted")
 
 
-def run_dirbust_manual(url):
+def run_dirbust_manual(url, outdir):
     """Run dirbust.py interactively."""
     script = find_script("dirbust.py")
     if script:
-        subprocess.run(["python3", script, url])
+        subprocess.run(["python3", script, url], cwd=outdir)
     else:
         warn("dirbust.py not found — running with defaults")
-        run_dirbust_default(url)
+        run_dirbust_default(url, outdir)
 
 
 # ── Phase 4: Subdomain Fuzzing ─────────────────────────
@@ -409,7 +419,7 @@ def add_subs_to_hosts(hits, domain, ip):
         success(f"Added {added} new entries to /etc/hosts")
 
 
-def run_subfuzz_default(domain, ip):
+def run_subfuzz_default(domain, ip, outdir):
     """Run ffuf directly with defaults, pretty output, no menus."""
     if not shutil.which(DEFAULT_SUBFUZZ_TOOL):
         fail(f"{DEFAULT_SUBFUZZ_TOOL} not found — skipping subdomain fuzzing")
@@ -421,7 +431,7 @@ def run_subfuzz_default(domain, ip):
         return
 
     clean_name = re.sub(r"[^\w]", "_", domain)
-    outfile = f"subfuzz_{clean_name}.txt"
+    outfile = os.path.join(outdir, f"subfuzz_{clean_name}.txt")
     wl_short = os.path.basename(wordlist)
 
     cmd = [
@@ -467,26 +477,26 @@ def run_subfuzz_default(domain, ip):
         return []
 
 
-def run_subfuzz_manual(domain):
+def run_subfuzz_manual(domain, outdir):
     """Run subfuzz.py interactively."""
     script = find_script("subfuzz.py")
     if script:
-        subprocess.run(["python3", script, domain])
+        subprocess.run(["python3", script, domain], cwd=outdir)
     else:
         warn("subfuzz.py not found — running with defaults")
-        run_subfuzz_default(domain, None)
+        run_subfuzz_default(domain, None, outdir)
 
 
 # ── Phase 5: CMS Detection ─────────────────────────────
 
-def run_cms_default(urls):
+def run_cms_default(urls, outdir):
     """Run CMS detection directly against all URLs, no banner."""
     script = find_script("cms.py")
     if script:
         step(f"Scanning {len(urls)} target(s) for CMS/technologies...")
         try:
             cmd = ["python3", script, "--no-banner"] + urls
-            subprocess.run(cmd, timeout=120)
+            subprocess.run(cmd, timeout=120, cwd=outdir)
         except subprocess.TimeoutExpired:
             fail("CMS detection timed out")
         except KeyboardInterrupt:
@@ -495,18 +505,18 @@ def run_cms_default(urls):
         fail("cms.py not found — skipping CMS detection")
 
 
-def run_cms_manual(urls):
+def run_cms_manual(urls, outdir):
     """Run cms.py interactively."""
     script = find_script("cms.py")
     if script:
-        subprocess.run(["python3", script] + urls)
+        subprocess.run(["python3", script] + urls, cwd=outdir)
     else:
         fail("cms.py not found — skipping CMS detection")
 
 
 # ── Summary ─────────────────────────────────────────────
 
-def summary(ip, hostname, phases_run):
+def summary(ip, hostname, phases_run, outdir):
     print(f"\n  {C.BOLD}{C.GREEN}{'━' * 50}{C.RESET}")
     print(f"  {C.BOLD}{C.GREEN}  ✓ Enumeration Complete{C.RESET}")
     print(f"  {C.BOLD}{C.GREEN}{'━' * 50}{C.RESET}\n")
@@ -514,6 +524,7 @@ def summary(ip, hostname, phases_run):
     print(f"  {C.DIM}Target:{C.RESET}     {C.WHITE}{ip}{C.RESET}")
     if hostname:
         print(f"  {C.DIM}Hostname:{C.RESET}   {C.WHITE}{hostname}{C.RESET}")
+    print(f"  {C.DIM}Output dir:{C.RESET} {C.WHITE}{outdir}{C.RESET}")
     print(f"  {C.DIM}Completed:{C.RESET}  {C.WHITE}{datetime.now().strftime('%H:%M:%S')}{C.RESET}")
     print()
 
@@ -521,7 +532,7 @@ def summary(ip, hostname, phases_run):
     for phase in phases_run:
         print(f"    {C.GREEN}✓{C.RESET} {phase}")
 
-    outfiles = [f for f in os.listdir(".") if f.startswith(("scan_", "dirbust_", "subfuzz_", "cms_")) and f.endswith(".txt")]
+    outfiles = [f for f in os.listdir(outdir) if f.startswith(("scan_", "dirbust_", "subfuzz_", "cms_")) and f.endswith(".txt")]
     if outfiles:
         print(f"\n  {C.DIM}Output files:{C.RESET}")
         for f in sorted(outfiles):
@@ -533,15 +544,34 @@ def summary(ip, hostname, phases_run):
 
 def main():
     if len(sys.argv) < 2:
-        print(f"\n  {C.YELLOW}Usage:{C.RESET} python3 {sys.argv[0]} <IP> [--manual]")
-        print(f"  {C.DIM}  Default: python3 {sys.argv[0]} 10.10.10.50{C.RESET}")
-        print(f"  {C.DIM}  Manual:  python3 {sys.argv[0]} 10.10.10.50 --manual{C.RESET}\n")
+        print(f"\n  {C.YELLOW}Usage:{C.RESET} python3 {sys.argv[0]} <IP> --box <name> [--manual]")
+        print(f"  {C.DIM}  Default: python3 {sys.argv[0]} 10.10.10.50 --box kobold{C.RESET}")
+        print(f"  {C.DIM}  Manual:  python3 {sys.argv[0]} 10.10.10.50 --box kobold --manual{C.RESET}\n")
         sys.exit(1)
 
     ip = sys.argv[1]
     manual = "--manual" in sys.argv or "-m" in sys.argv
 
-    banner(ip)
+    box_name = None
+    if "--box" in sys.argv:
+        idx = sys.argv.index("--box")
+        if idx + 1 < len(sys.argv):
+            box_name = sys.argv[idx + 1]
+
+    if not box_name:
+        try:
+            box_name = input(f"  {C.WHITE}Box name{C.RESET} {C.DIM}(e.g. kobold){C.RESET}: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            sys.exit(0)
+        if not box_name:
+            fail("Box name required — aborting")
+            sys.exit(1)
+
+    outdir = resolve_outdir(box_name)
+    success(f"Output directory: {C.BOLD}{outdir}{C.RESET}")
+
+    banner(ip, box_name)
 
     if manual:
         print(f"  {C.YELLOW}{C.BOLD}Mode: MANUAL{C.RESET} {C.DIM}— interactive options for each phase{C.RESET}\n")
@@ -568,11 +598,11 @@ def main():
             warn("Skipping nmap scan")
         else:
             section("Phase 2: Nmap Scan")
-            run_nmap_manual(ip)
+            run_nmap_manual(ip, outdir)
             phases_run.append("Nmap Scan")
     else:
         section("Phase 2: Nmap Scan")
-        run_nmap_default(ip)
+        run_nmap_default(ip, outdir)
         phases_run.append("Nmap Scan")
 
     # ── Phase 3: Directory Busting ──────────────────
@@ -581,11 +611,11 @@ def main():
             warn("Skipping directory busting")
         else:
             section("Phase 3: Directory Busting")
-            run_dirbust_manual(url)
+            run_dirbust_manual(url, outdir)
             phases_run.append("Directory Busting")
     else:
         section("Phase 3: Directory Busting")
-        run_dirbust_default(url)
+        run_dirbust_default(url, outdir)
         phases_run.append("Directory Busting")
 
     # ── Phase 4: Subdomain Fuzzing ──────────────────
@@ -596,11 +626,11 @@ def main():
                 warn("Skipping subdomain fuzzing")
             else:
                 section("Phase 4: Subdomain Fuzzing")
-                run_subfuzz_manual(hostname)
+                run_subfuzz_manual(hostname, outdir)
                 phases_run.append("Subdomain Fuzzing")
         else:
             section("Phase 4: Subdomain Fuzzing")
-            hits = run_subfuzz_default(hostname, ip) or []
+            hits = run_subfuzz_default(hostname, ip, outdir) or []
             discovered_subs = [h["subdomain"] for h in hits]
             phases_run.append("Subdomain Fuzzing")
     else:
@@ -618,15 +648,15 @@ def main():
             warn("Skipping CMS detection")
         else:
             section("Phase 5: CMS Detection")
-            run_cms_manual(cms_urls)
+            run_cms_manual(cms_urls, outdir)
             phases_run.append("CMS Detection")
     else:
         section("Phase 5: CMS Detection")
-        run_cms_default(cms_urls)
+        run_cms_default(cms_urls, outdir)
         phases_run.append("CMS Detection")
 
     # ── Summary ─────────────────────────────────────
-    summary(ip, hostname, phases_run)
+    summary(ip, hostname, phases_run, outdir)
 
 
 if __name__ == "__main__":
